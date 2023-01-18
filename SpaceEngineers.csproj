@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <SpaceEngineers>C:\Program Files (x86)\Steam\steamapps\common\SpaceEngineers</SpaceEngineers>
+    <SpaceEngineers>D:\Games\Steam\steamapps\common\SpaceEngineers</SpaceEngineers>
   </PropertyGroup>
 
   <ItemGroup>
