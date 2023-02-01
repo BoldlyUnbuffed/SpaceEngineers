@@ -5,3 +5,5 @@
 # Needless SDK's shit.
 bin/
 obj/
+
+**/Thumbs.db
