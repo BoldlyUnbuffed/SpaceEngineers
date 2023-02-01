@@ -33,10 +33,8 @@ public sealed class Program : MyGridProgram {
      */
     #region InventoryDashboard
 
-    // LCD Panel to be used to display inventory
-    // Set panel to Mono font for best result
-    private string consoleName =  "Inventory Dashboard";
-
+    private List<KeyValuePair<string, int>> textSurfaceIdentifiers =
+     new List<KeyValuePair<string, int>>() { };
     // List of subtypes to filter the display for
     // Only Ore and Ingot types supported
     private List<string> subtypeFilter = new List<string>{ 
@@ -52,25 +50,153 @@ public sealed class Program : MyGridProgram {
             "Uranium",
             "Platinum",
     };
+    IMyProgrammableBlock self = null;
+    public IMyProgrammableBlock Self() {
+        if (self != null) {
+            return self;
+        }
+        List<IMyProgrammableBlock> list = new List<IMyProgrammableBlock>();
+        GridTerminalSystem.GetBlocksOfType<IMyProgrammableBlock>(list, block => block.IsRunning);
+
+        if (list.Count != 1) {
+            throw new Exception("PANIC: Failed to retrieve Programmable Block.");
+        }
+
+        self = list[0];
+
+        return self;
+    }
+
+    public class Config {
+        public string sectionName { get; }
+        private Dictionary<string, string> config;
+        public List<Config> sections { get; } = new List<Config>();
+
+        private System.Text.RegularExpressions.Regex sectionRe = new System.Text.RegularExpressions.Regex(@"^\[(.+)\]$");
+
+        private Config(IEnumerator<string> lines, string sectionName) {
+            this.sectionName = sectionName;
+            config = new Dictionary<string, string>();
+            while(lines.MoveNext()) {
+                string line = lines.Current.Trim();
+
+                if (sectionName != "" && line == "") {
+                    // if we encounter an empty line in a section
+                    // close the section.
+
+                    break;
+                }
+
+                var match = sectionRe.Match(line);
+                if (match.Success) {
+                    // If we encounter a section within a section, then
+                    // throw an exception
+                    if (sectionName != "") {
+                        throw new Exception("PANIC: Found a section within a section. Did you forget to close a section with an empty line?");
+                    }
+
+                    sections.Add(new Config(lines, match.Groups[1].Value));
+
+                    continue;
+                }
+
+                string[] kv = line.Split('=');
+                if (kv.Length > 1) {
+                    config.Add(kv[0].Trim(), kv[1].Trim());
+                } else {
+                    config.Add(kv[0].Trim(), "");
+                }
+            };
+        }
+        public Config(string config) : this((System.Text.RegularExpressions.Regex.Split(config, @"\r?\n|\r") as IEnumerable<string>).GetEnumerator(), "") {
+        }
+
+        public string Get(string key, string defaultValue) {
+            return config.GetValueOrDefault(key, defaultValue);
+        }
+    }
+
 
     private List<IMyTerminalBlock> entityList = new List<IMyTerminalBlock>();
     private Dictionary<string, MyFixedPoint> inventoryDict = new Dictionary<string, MyFixedPoint>();
     private List<MyInventoryItem> itemList = new List<MyInventoryItem>();
 
+    private IMyTextSurface[] textSurfaces;
+
+    private void WriteText(string value, bool append = false)
+    {
+        foreach (IMyTextSurface textSurface in textSurfaces) {
+            textSurface.WriteText(value, append);
+        }
+    }
+
+    private string typePrefix = "MyObjectBuilder_";
+    private string GetOreKey(string material) {
+        return typePrefix + "Ore:" + material;
+    }
+
+    private string GetIngotKey(string material) {
+        return typePrefix + "Ingot:" + material;
+    }
+
+    private MyFixedPoint GetOreAmount(string material) {
+        string key = GetOreKey(material);
+        if (inventoryDict.ContainsKey(key)) {
+            return inventoryDict[key];
+        }
+        return 0;
+    }
+    private MyFixedPoint GetIngotAmount(string material) {
+        string key = GetIngotKey(material);
+        if (inventoryDict.ContainsKey(key)) {
+            return inventoryDict[key];
+        }
+        return 0;
+    }
+
     public void Main(string argument, UpdateType updateSource)
     {
+        textSurfaces = new IMyTextSurface[textSurfaceIdentifiers.Count];
+
         MyFixedPoint totalVolume = 0;
         MyFixedPoint usedVolume = 0;
+        int i = 0;
+        foreach(var kv in textSurfaceIdentifiers) {
+            var consoleName = kv.Key;
+            var displayIndex = kv.Value;
 
-        var console = GridTerminalSystem.GetBlockWithName(consoleName) as IMyTextPanel;
-        if (console == null) {
-            Echo(String.Format("ERROR: Failed to find text panel {0}", consoleName));
-            return;
+            var console = GridTerminalSystem.GetBlockWithName(consoleName);
+            if (console == null) {
+                Echo(String.Format("ERROR: Failed to find block {0}", consoleName));
+                return;
+            }
+
+            IMyTextSurface textSurface = null;
+
+            if (console is IMyTextSurfaceProvider) {
+                var textSurfaceProvider = console as IMyTextSurfaceProvider;
+                if (displayIndex < 0 || displayIndex >= textSurfaceProvider.SurfaceCount) {
+                    Echo(String.Format(
+                        "ERROR: Failed to find display {0} on text surface provider {1}",
+                        displayIndex,
+                        consoleName
+                    ));
+                    return;
+                }
+                textSurface = textSurfaceProvider.GetSurface(displayIndex);
+            }
+
+            if (textSurface == null) {
+                Echo(String.Format("ERROR: Block {0} is not a text surface provider.", consoleName));
+                return;
+            }
+
+            // Set textSurface to correct ContentType and apply Monospace font
+            textSurface.ContentType = ContentType.TEXT_AND_IMAGE;
+            textSurface.Font = "Monospace";
+
+            textSurfaces[i++] = textSurface;
         }
-
-        // Set console to correct ContentType and apply Monospace font
-        console.ContentType = ContentType.TEXT_AND_IMAGE;
-        console.Font = "Monospace";
 
         // Get list of containers
         entityList.Clear();
@@ -80,11 +206,16 @@ public sealed class Program : MyGridProgram {
         inventoryDict.Clear();
 
         // Loop over all entities
-        for (var i = 0; i < entityList.Count; i++) {
-            var entity = entityList[i] as IMyEntity;
-
+        foreach(var entity in entityList) {
             // Skip block if it does not have an inventory
             if (!entity.HasInventory) {
+                continue;
+            }
+
+            if (enableLocalGridOnly && (
+                    !(entity is IMyCubeBlock) ||
+                    (entity as IMyCubeBlock).CubeGrid != Self().CubeGrid
+            )) {
                 continue;
             }
 
@@ -122,13 +253,22 @@ public sealed class Program : MyGridProgram {
             
         }
 
-        string typePrefix = "MyObjectBuilder_";
         string formatString = "{0,-10}{1,7} {2,7}\n";
         string lastRowFormatString = "\n{0,20:0%} {1}\n";
 
 
         // Write heading row
-        console.WriteText(String.Format(formatString + "\n", "Material", "Ingots", "Ore"), false);
+        WriteText(String.Format(formatString + "\n", "Material", "Ingots", "Ore"), false);
+
+
+        if (enableAutoSort) {
+            subtypeFilter.Sort((l, r) => {
+                MyFixedPoint lAmount = GetOreAmount(l) + GetIngotAmount(l);
+                MyFixedPoint rAmount = GetOreAmount(r) + GetIngotAmount(r);
+
+                return (rAmount - lAmount).ToIntSafe();
+            });
+        }
 
         // for each material in the subtype list
         foreach(string material in subtypeFilter) {
@@ -136,28 +276,18 @@ public sealed class Program : MyGridProgram {
             MyFixedPoint ore = 0;
             MyFixedPoint ingots = 0;
 
-            // Build identifier strings for material Ore and Ingots
-            string oreKey = typePrefix + "Ore:" + material;
-            string ingotsKey = typePrefix + "Ingot:" + material;
-
-            // If we have any, grab the amount of Ore we have
-            if (inventoryDict.ContainsKey(oreKey)) {
-                ore = inventoryDict[oreKey];
-            }
-            // If we have any grab the amount of ingots we have
-            if (inventoryDict.ContainsKey(ingotsKey)) {
-                ingots = inventoryDict[ingotsKey];
-            }
+            ore += GetOreAmount(material);
+            ingots += GetIngotAmount(material);
             
             // Write a line for the material inlcuding the material name and amounts of ingots and ore
             string s = String.Format(formatString, material, formatAmount(ingots), formatAmount(ore));
             if (material == "Stone" || material == "Ice") {
                 s = String.Format(formatString, material, "", formatAmount(ore));
             }
-            console.WriteText(s, true);
+            WriteText(s, true);
         }
         
-        console.WriteText(String.Format(lastRowFormatString, (float)usedVolume/(float)totalVolume,  "Used"), true);
+        WriteText(String.Format(lastRowFormatString, (float)usedVolume/(float)totalVolume,  "Used"), true);
     }
 
 
@@ -174,10 +304,42 @@ public sealed class Program : MyGridProgram {
         return String.Format("{0:0.#}", (float) amount);
     }
 
+    private bool enableLocalGridOnly = false;
+    private bool enableAutoSort = false;
     public Program()
     {
         // Run script once every 100 ticks
         Runtime.UpdateFrequency = UpdateFrequency.Update100;
+
+        Config config = new Config(Self().CustomData);
+
+        enableLocalGridOnly = config.Get("localGridOnly", "false") == "true";
+        enableAutoSort = config.Get("autoSort", "false") == "true";
+
+        foreach(Config section in config.sections) {
+            if (section.sectionName != "dashboard") {
+                continue;
+            }
+
+            string blockName = section.Get("block", "");
+            if (blockName == "") {
+                continue;
+            }
+
+            int index = int.Parse(section.Get("surface", "0"));
+
+            textSurfaceIdentifiers.Add(new KeyValuePair<string, int>(blockName, index));
+        }
+
+        if (textSurfaceIdentifiers.Count == 0) {
+            // Keep the default value for backwards compatibility
+            textSurfaceIdentifiers.Add(
+                new KeyValuePair<string, int>(
+                    "Inventory Dashboard",
+                     0
+                )
+            );
+        }
     }
 
     public void Save()
