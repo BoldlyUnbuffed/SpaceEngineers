@@ -33,7 +33,7 @@ public sealed class Program : MyGridProgram {
      * The code inside this region is the ingame script.
      */
     #region DashboardReplication
-    bool enableDebug = true;
+    bool enableDebug = false;
     private void Debug(string s, params Object[] args) {
         if (!enableDebug) {
             return;
