@@ -44,7 +44,7 @@ public sealed class Program : MyGridProgram {
             "Silicon",
             "Nickel",
             "Cobalt",
-            "Magensium",
+            "Magnesium",
             "Silver",
             "Gold",
             "Uranium",
